@@ -231,3 +231,15 @@ class DownEncoder2D(nn.Module):
         hidden_states = self.act_fn_out(hidden_states)
 
         return hidden_states
+
+
+def apply_pruning_syncnet(model: SyncNet, amount: float = 0.2):
+    """
+    Apply L1 unstructured pruning to all nn.Conv2d and nn.Linear layers in the SyncNet model.
+    After pruning, the pruning reparameterization is removed to make the model inference-ready.
+    """
+    import torch.nn.utils.prune as prune
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            prune.l1_unstructured(module, name="weight", amount=amount)
+            prune.remove(module, "weight")

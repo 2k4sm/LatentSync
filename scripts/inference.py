@@ -13,15 +13,15 @@
 # limitations under the License.
 
 import argparse
+import time
 from omegaconf import OmegaConf
 import torch
 from diffusers import AutoencoderKL, DDIMScheduler
-from latentsync.models.unet import UNet3DConditionModel
+from latentsync.models.unet import UNet3DConditionModel, apply_pruning_unet
 from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline
 from diffusers.utils.import_utils import is_xformers_available
 from accelerate.utils import set_seed
 from latentsync.whisper.audio2feature import Audio2Feature
-
 
 def main(config, args):
     # Check if the GPU supports float16
@@ -41,21 +41,28 @@ def main(config, args):
     else:
         raise NotImplementedError("cross_attention_dim must be 768 or 384")
 
-    audio_encoder = Audio2Feature(model_path=whisper_model_path, device="cuda", num_frames=config.data.num_frames)
+    audio_encoder = Audio2Feature(
+        model_path=whisper_model_path,
+        device="cuda",
+        num_frames=config.data.num_frames
+    )
 
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse", torch_dtype=dtype)
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
 
+    # Load UNet model from checkpoint
     unet, _ = UNet3DConditionModel.from_pretrained(
         OmegaConf.to_container(config.model),
         args.inference_ckpt_path,  # load checkpoint
         device="cuda",
     )
-
     unet = unet.to(dtype=dtype)
 
-    # set xformers
+    # Apply pruning to the UNet model for optimization.
+    apply_pruning_unet(unet, amount=0.2)
+
+    # Set xformers for memory efficient attention if available
     if is_xformers_available():
         unet.enable_xformers_memory_efficient_attention()
 
@@ -73,19 +80,23 @@ def main(config, args):
 
     print(f"Initial seed: {torch.initial_seed()}")
 
-    pipeline(
-        video_path=args.video_path,
-        audio_path=args.audio_path,
-        video_out_path=args.video_out_path,
-        video_mask_path=args.video_out_path.replace(".mp4", "_mask.mp4"),
-        num_frames=config.data.num_frames,
-        num_inference_steps=args.inference_steps,
-        guidance_scale=args.guidance_scale,
-        weight_dtype=dtype,
-        width=config.data.resolution,
-        height=config.data.resolution,
-    )
-
+    start_time = time.time()
+    with torch.no_grad():
+        with torch.cuda.amp.autocast(dtype=dtype):
+            pipeline(
+                video_path=args.video_path,
+                audio_path=args.audio_path,
+                video_out_path=args.video_out_path,
+                video_mask_path=args.video_out_path.replace(".mp4", "_mask.mp4"),
+                num_frames=config.data.num_frames,
+                num_inference_steps=args.inference_steps,
+                guidance_scale=args.guidance_scale,
+                weight_dtype=dtype,
+                width=config.data.resolution,
+                height=config.data.resolution,
+            )
+    end_time = time.time()
+    print(f"Inference completed in {end_time - start_time:.2f} seconds")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

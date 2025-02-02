@@ -28,7 +28,6 @@ from ..utils.util import zero_rank_log
 from einops import rearrange
 from .utils import zero_module
 
-
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -200,7 +199,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         output_channel = reversed_block_out_channels[0]
         for i, up_block_type in enumerate(up_block_types):
             res = 2 ** (3 - i)
-            is_final_block = i == len(block_out_channels) - 1
+            is_final_block = i == len(self.up_blocks) - 1
 
             prev_output_channel = output_channel
             output_channel = reversed_block_out_channels[i]
@@ -432,7 +431,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         down_block_res_samples = list(down_block_res_samples)
         if down_block_additional_residuals is not None:
             for i, down_block_additional_residual in enumerate(down_block_additional_residuals):
-                if down_block_additional_residual.dim() == 4:  # boardcast
+                if down_block_additional_residual.dim() == 4:  # broadcast
                     down_block_additional_residual = down_block_additional_residual.unsqueeze(2)
                 down_block_res_samples[i] = down_block_res_samples[i] + down_block_additional_residual
 
@@ -443,7 +442,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
 
         # support controlnet
         if mid_block_additional_residual is not None:
-            if mid_block_additional_residual.dim() == 4:  # boardcast
+            if mid_block_additional_residual.dim() == 4:  # broadcast
                 mid_block_additional_residual = mid_block_additional_residual.unsqueeze(2)
             sample = sample + mid_block_additional_residual
 
@@ -526,3 +525,15 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             resume_global_step = 0
 
         return unet, resume_global_step
+
+
+def apply_pruning_unet(model: UNet3DConditionModel, amount: float = 0.2):
+    """
+    Apply L1 unstructured pruning to all nn.Conv2d, nn.Conv3d, and nn.Linear layers in the UNet3DConditionModel.
+    After pruning, the pruning reparameterization is removed to make the model inference-ready.
+    """
+    import torch.nn.utils.prune as prune
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Conv3d, nn.Linear)):
+            prune.l1_unstructured(module, name="weight", amount=amount)
+            prune.remove(module, "weight")
